@@ -1,4 +1,8 @@
 import stan
+import httpstan
+import nest_asyncio
+nest_asyncio.apply()
+print(httpstan.__version__)
 
 # Simple test model
 model_code = """
