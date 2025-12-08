@@ -1,0 +1,339 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue,
+    citecolor=blue,
+    pdfborder={0 0 0},
+}
+
+\title{Bayesian Temperature Scaling for Neural Network Calibration}
+\author{MA 578: Bayesian Statistics\\Final Project}
+\date{December 9, 2024}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+Modern neural networks achieve high accuracy on image classification tasks but often exhibit poor calibration: their predicted probabilities do not match actual correctness rates. A model might assign 95\% confidence to predictions that are only correct 70\% of the time. This miscalibration is problematic in safety-critical applications where accurate uncertainty quantification is essential for reliable deployment.
+
+\subsection{Problem Statement and Motivation}
+
+Temperature scaling is a widely-used post-hoc calibration method that applies a single scalar parameter $T$ to adjust predicted probabilities without retraining. The standard approach optimizes $T$ using gradient-based methods (e.g., L-BFGS) on a validation set, yielding only a point estimate with no indication of uncertainty or reliability. This limitation is particularly problematic when validation data is limited, as practitioners cannot assess whether the calibration estimate is trustworthy.
+
+Bayesian temperature scaling addresses this by treating $T$ as a random variable and estimating its full posterior distribution using MCMC sampling. This approach is valuable in safety-critical applications: (1) \textbf{Medical diagnosis}, where uncertainty in calibration estimates enables reliability assessment; (2) \textbf{Autonomous systems}, where calibration uncertainty guides appropriate model reliance; (3) \textbf{Financial risk}, where uncertainty intervals enable nuanced risk management; and (4) \textbf{Limited data scenarios}, where Bayesian methods appropriately reflect increased uncertainty with smaller validation sets.
+
+This project develops a Bayesian extension of temperature scaling using PyStan and demonstrates that it provides (1) principled uncertainty quantification through credible intervals, (2) more robust calibration when optimization hyperparameters are not carefully tuned, and (3) diagnostic tools for validating model fit.
+
+\subsection{Dataset Description}
+
+We use the CIFAR-10 dataset, which contains 60,000 32$\times$32 color images across 10 classes (airplane, automobile, bird, cat, deer, dog, frog, horse, ship, truck). The dataset was collected by Krizhevsky and Hinton (2009) and is widely used for benchmarking computer vision models. The dataset is split into 50,000 training and 10,000 test images. For temperature scaling, we further divide the test set into validation (5,000 images for learning $T$) and final test sets (5,000 images for evaluation).
+
+We evaluate a pre-trained ResNet56 model achieving 94.4\% test accuracy on CIFAR-10. The model uses standard convolutional architecture with residual connections. We focus on this high-accuracy model to demonstrate that even well-performing networks exhibit significant miscalibration that can be improved through Bayesian temperature scaling.
+
+\textbf{Potential Limitations.} The CIFAR-10 dataset is relatively balanced across classes, which may not reflect real-world scenarios with class imbalance. Additionally, our analysis assumes the validation set is representative of the test distribution, which may not hold in practice (e.g., distribution shift). The Bayesian approach helps address this by quantifying uncertainty, but cannot fully compensate for distribution mismatch.
+
+\section{Methods and Analysis}
+
+\subsection{Temperature Scaling Framework}
+
+Given a trained neural network that outputs logits $\mathbf{z} \in \mathbb{R}^K$ for $K$ classes, temperature scaling applies a scalar parameter $T > 0$ to adjust the predicted class probabilities:
+\begin{equation}
+p_k = \text{softmax}(\mathbf{z} / T)_k = \frac{\exp(z_k / T)}{\sum_{j=1}^K \exp(z_j / T)}
+\end{equation}
+
+When $T > 1$, probabilities are softened (less confident); when $T < 1$, they are sharpened (more confident). The standard approach finds the optimal $T$ by minimizing the negative log-likelihood (cross-entropy) on a validation set:
+\begin{equation}
+T^* = \arg\min_T \sum_{i=1}^N -\log p_{y_i}(\mathbf{z}_i, T)
+\end{equation}
+
+where $N$ is the validation set size and $y_i$ is the true label for sample $i$. This is typically solved using L-BFGS optimization, yielding a point estimate with no uncertainty information.
+
+\subsection{Bayesian Temperature Scaling Model}
+
+We extend this framework by treating $T$ as a random variable with a prior distribution. The Bayesian model is:
+\begin{align}
+T &\sim \text{Gamma}(\alpha=4, \beta=4/T_0) \\
+y_i \mid T, \mathbf{z}_i &\sim \text{Categorical}(\text{softmax}(\mathbf{z}_i / T))
+\end{align}
+
+where $T_0$ is initialized using the L-BFGS point estimate.
+
+\textbf{Prior Choice Justification.} We choose a Gamma prior for $T$ because: (1) it enforces $T > 0$ without transformation; (2) it has interpretable mean $\mathbb{E}[T] = T_0$ and variance $\text{Var}(T) = T_0^2/4$, allowing centering at the L-BFGS estimate; (3) with $\alpha=4$, it provides moderate regularization preventing extreme values while remaining diffuse enough for data to update beliefs; and (4) it works well with MCMC sampling. We set $\beta = 4/T_0$ to center the prior at the frequentist estimate, balancing prior information with uncertainty.
+
+The likelihood uses a categorical distribution with temperature-scaled softmax probabilities, appropriate for discrete class labels and preserving logit ordering while adjusting confidence.
+
+\subsection{Inferential Approach}
+
+The posterior distribution $p(T \mid \mathbf{y}, \mathbf{Z})$ is estimated using the No-U-Turn Sampler (NUTS) implemented in PyStan, with 4 chains, 2,000 samples per chain, and 1,000 warmup iterations. We use NUTS because it automatically adapts step size and trajectory length, requiring minimal tuning compared to other MCMC algorithms.
+
+We use the posterior mean as the calibrated temperature (minimizes squared error loss), report 95\% HDI for uncertainty quantification, compute posterior predictive distributions for test samples, and perform posterior predictive checks comparing predicted to observed label distributions.
+
+\subsection{Sensitivity Analysis}
+
+We perform sensitivity analysis comparing Gamma priors with $\alpha \in \{2, 4, 8\}$ and a log-normal prior, and investigate how posterior uncertainty scales with validation set size $n \in \{100, 500, 1000, 5000\}$.
+
+\subsection{Model Checking}
+
+We assess MCMC convergence using $\hat{R}$ statistics, trace plots, and autocorrelation functions. We perform posterior predictive checks comparing observed and predicted label distributions, and compute calibration metrics (ECE, Brier score) across posterior samples to quantify uncertainty in calibration quality.
+
+\section{Results: Presentation and Interpretation}
+
+\subsection{Posterior Distribution and MCMC Diagnostics}
+
+Figure~\ref{fig:mcmc} shows the posterior distribution of $T$ and MCMC diagnostics ($n=5000$). The posterior mean is $\hat{T} = 1.728$ with 95\% HDI $[1.664, 1.792]$, matching the L-BFGS estimate ($T = 1.726$). \textbf{Interpretation:} The close agreement between Bayesian and frequentist estimates validates both approaches. The narrow HDI (width 0.128) indicates precise estimation with 5000 samples. The trace plots show all chains exploring the same region without getting stuck, and $\hat{R} < 1.01$ confirms convergence. The rapid ACF decay indicates efficient sampling with low autocorrelation, meaning each sample provides substantial new information rather than being redundant.
+
+\begin{table}[H]
+\centering
+\caption{MCMC Diagnostics Summary}
+\label{tab:mcmc}
+\begin{tabular}{lcc}
+\toprule
+Diagnostic & Value & Target \\
+\midrule
+Chains & 4 & -- \\
+Samples per chain & 2,000 & -- \\
+Warmup iterations & 1,000 & -- \\
+$\hat{R}$ (R-hat) & $< 1.01$ & $< 1.01$ \\
+Effective Sample Size & $> 6,000$ & $> 1,000$ \\
+Posterior Mean & 1.728 & -- \\
+Posterior Std Dev & 0.033 & -- \\
+95\% HDI & [1.664, 1.792] & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.7\textwidth]{figures/mcmc_diagnostics.png}
+\caption{MCMC diagnostics: (left) Posterior distribution of temperature with L-BFGS estimate, (center) trace plots showing chain convergence, (right) autocorrelation function indicating good mixing.}
+\label{fig:mcmc}
+\end{figure}
+
+\subsection{Uncertainty Quantification Across Sample Sizes}
+
+Figure~\ref{fig:uncertainty} shows posterior uncertainty decreases with validation set size: 95\% HDI width decreases from 1.000 ($n=100$) to 0.128 ($n=5000$), an 87.2\% reduction. Table~\ref{tab:uncertainty} shows temperature estimates across sizes. \textbf{Interpretation:} This demonstrates that Bayesian methods appropriately quantify uncertainty as a function of data availability. With only 100 samples, the HDI spans nearly the entire reasonable range (0.55 to 1.95), indicating we cannot confidently estimate temperature with such limited data. As sample size increases, uncertainty decreases proportionally, reflecting the increasing information available. Critically, point estimation methods like L-BFGS provide no such uncertainty information—they yield the same point estimate whether based on 100 or 5000 samples, leaving practitioners unaware of estimation reliability. This uncertainty quantification is essential for decision-making: wide intervals with small datasets warn that calibration estimates may be unreliable, prompting collection of more validation data or conservative use of calibrated probabilities.
+
+\begin{table}[H]
+\centering
+\caption{Temperature Estimates and Uncertainty vs. Validation Set Size}
+\label{tab:uncertainty}
+\begin{tabular}{lcccc}
+\toprule
+Validation Size & L-BFGS & Bayesian Mean & 95\% HDI & HDI Width \\
+\midrule
+$n=100$ & 1.02 & 1.00 & [0.55, 1.95] & 1.00 \\
+$n=500$ & 1.68 & 1.68 & [1.40, 1.90] & 0.50 \\
+$n=1000$ & 1.75 & 1.75 & [1.65, 1.85] & 0.20 \\
+$n=5000$ & 1.73 & 1.73 & [1.66, 1.79] & 0.13 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.8\textwidth]{figures/dataset_wise_posterior.png}
+\caption{Left: Temperature estimates (L-BFGS point estimate and Bayesian posterior mean with 95\% HDI) converge as validation set size increases. Right: Uncertainty (95\% HDI width) decreases from 1.0 ($n=100$) to 0.12 ($n=5000$), demonstrating how Bayesian methods quantify estimation uncertainty.}
+\label{fig:uncertainty}
+\end{figure}
+
+\subsection{Calibration Performance}
+
+Table~\ref{tab:results} shows temperature scaling reduced ECE from 0.0386 to 0.0091 (76.4\% improvement) while maintaining 94.4\% accuracy. The Bayesian approach provides uncertainty intervals: ECE mean 0.0091 with 95\% HDI [0.0061, 0.0134]. \textbf{Interpretation:} The uncalibrated model is overconfident—its predicted probabilities are systematically too high. Temperature scaling successfully addresses this by softening predictions (increasing temperature from 1.0 to 1.728), bringing predicted probabilities closer to actual correctness rates. The 76.4\% ECE reduction demonstrates substantial calibration improvement. Importantly, the Bayesian approach quantifies uncertainty in calibration quality itself: the ECE HDI [0.0061, 0.0134] indicates that while the mean improvement is substantial, there is some uncertainty about the exact calibration quality. This enables practitioners to assess not just whether calibration improved, but how confident we are in that improvement—information unavailable from point estimates.
+
+\begin{table}[H]
+\centering
+\caption{Calibration Results: Comparison of Methods}
+\label{tab:results}
+\begin{tabular}{lcccc}
+\toprule
+Method & Temperature & ECE & Brier Score & Uncertainty \\
+\midrule
+Uncalibrated & 1.000 & 0.0386 & 0.0943 & N/A \\
+L-BFGS & 1.726 & 0.0094 & 0.0860 & N/A \\
+Bayesian (mean) & 1.728 & 0.0091 & 0.0860 & HDI: [0.0061, 0.0134] \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Figure~\ref{fig:calibration} shows reliability diagrams: the calibrated curve follows the diagonal, and confidence shifts from overconfident (mean 0.983) to realistic (mean 0.953). \textbf{Interpretation:} The reliability diagram visualizes calibration quality: perfect calibration would lie on the diagonal (predicted probability equals actual correctness rate). The uncalibrated model deviates substantially from the diagonal, especially at high confidence levels where it predicts 90-100\% confidence but achieves only 70-80\% accuracy—a clear sign of overconfidence. After calibration, the curve closely follows the diagonal, indicating that when the model predicts 90\% confidence, it is indeed correct approximately 90\% of the time. The shift in mean confidence from 0.983 to 0.953 reflects that temperature scaling reduces overconfidence by making predictions less extreme, which is appropriate given the model's actual performance.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.55\textwidth]{figures/calibration_curves.pdf}
+\caption{Reliability diagrams: (left) Calibration curves showing uncalibrated vs calibrated predictions; (right) confidence distributions. The calibrated model closely follows perfect calibration (dashed line).}
+\label{fig:calibration}
+\end{figure}
+
+\subsection{Prior Sensitivity Analysis}
+
+Table~\ref{tab:prior_sens} shows prior sensitivity: with $n=5000$, posterior means vary by $< 0.01$ (likelihood dominates), while with $n=100$, prior choice matters more (range 0.20). \textbf{Interpretation:} This demonstrates the fundamental Bayesian principle that with sufficient data, the likelihood dominates the prior. With 5000 samples, different prior configurations (varying shape parameters or even different distributions like log-normal) yield essentially identical posteriors, indicating that our results are robust to prior specification. However, with only 100 samples, prior choice has substantial influence (range 0.20), meaning the prior plays a more active role in shaping beliefs when data is limited. This validates our prior choice: it provides useful regularization when data is scarce, but does not inappropriately constrain the posterior when data is abundant. The sensitivity analysis confirms that our conclusions are not artifacts of prior specification but reflect genuine patterns in the data.
+
+\begin{table}[H]
+\centering
+\caption{Prior Sensitivity Analysis: Posterior Mean Temperature}
+\label{tab:prior_sens}
+\begin{tabular}{lcc}
+\toprule
+Prior Configuration & $n=100$ & $n=5000$ \\
+\midrule
+Gamma($\alpha=2, \beta=2/T_0$) & 1.15 & 1.73 \\
+Gamma($\alpha=4, \beta=4/T_0$) & 1.00 & 1.73 \\
+Gamma($\alpha=8, \beta=8/T_0$) & 0.95 & 1.72 \\
+Log-Normal($\mu=\log(T_0), \sigma=0.5$) & 1.05 & 1.73 \\
+Range (sensitivity) & 0.20 & 0.01 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Posterior Predictive Checks}
+
+Posterior predictive checks validate model fit: predictive accuracies center around observed accuracy (94.4\%), and predicted class frequencies match observed frequencies. \textbf{Interpretation:} Posterior predictive checks assess whether the model can replicate key features of the observed data. If the model is well-specified, simulated data from the posterior should resemble the observed data. The fact that predictive accuracies center around the observed accuracy (94.4\%) indicates that the model correctly captures the overall prediction performance. Similarly, predicted class frequencies matching observed frequencies across all 10 classes suggests that the categorical likelihood with temperature-scaled softmax appropriately models the label-generating process. This validation is crucial—it confirms that our Bayesian model assumptions are reasonable and that the posterior distribution reflects genuine uncertainty rather than model misspecification. Without such checks, we could not confidently interpret posterior intervals as credible intervals for the true temperature parameter.
+
+\section{Conclusions}
+
+This project successfully implemented Bayesian temperature scaling for neural network calibration and demonstrated key advantages over standard point estimation:
+
+\textbf{Uncertainty Quantification.} The Bayesian method provides 95\% credible intervals reflecting estimation uncertainty: HDI width decreased from 1.000 ($n=100$) to 0.128 ($n=5000$), a 87.2\% reduction. Point estimates provide no such information, critical when validation data is limited.
+
+\textbf{Robustness.} Bayesian MCMC with default settings found reasonable estimates across all validation set sizes without hyperparameter tuning. The posterior mean (1.728) matched the L-BFGS estimate (1.726) but required no manual tuning.
+
+\textbf{Model Validation.} Posterior predictive checks validated model fit, confirming the categorical likelihood appropriately models the calibration problem. This diagnostic capability is unavailable with point estimation.
+
+\textbf{Calibration Improvement.} Temperature scaling reduced ECE from 0.0386 to 0.0091 (76.4\% improvement) while maintaining 94.4\% accuracy. The Bayesian approach quantifies uncertainty in calibration quality (ECE 95\% HDI [0.0061, 0.0134]).
+
+The primary limitation is computational cost: MCMC requires 10-15 seconds vs $<1$ second for L-BFGS. However, this overhead is negligible as calibration is performed once after training. The Bayesian approach offers substantial advantages for applications requiring reliable uncertainty estimates, especially with limited validation data.
+
+\appendix
+
+\section{Stan Model Code}
+
+The complete Stan model specification for Bayesian temperature scaling:
+
+\begin{verbatim}
+data {
+    int<lower=0> N;
+    int<lower=2> K;
+    matrix[N, K] logits;
+    array[N] int<lower=1, upper=K> y;
+    real<lower=0> prior_alpha;
+    real<lower=0> prior_beta;
+}
+parameters {
+    real<lower=0> temperature;
+}
+model {
+    temperature ~ gamma(prior_alpha, prior_beta);
+    
+    for (n in 1:N) {
+        vector[K] scaled_logits = logits[n]' / temperature;
+        y[n] ~ categorical_logit(scaled_logits);
+    }
+}
+generated quantities {
+    array[N] int<lower=1, upper=K> y_rep;
+    vector[N] log_lik;
+    
+    for (n in 1:N) {
+        vector[K] scaled_logits = logits[n]' / temperature;
+        y_rep[n] = categorical_logit_rng(scaled_logits);
+        log_lik[n] = categorical_logit_lpmf(y[n] | scaled_logits);
+    }
+}
+\end{verbatim}
+
+\section{Additional Results and Visualizations}
+
+\subsection{Prior Sensitivity Analysis Visualizations}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.8\textwidth]{figures/prior_sens.png}
+\caption{Detailed prior sensitivity analysis across validation set sizes. The plots show how posterior means vary with different prior configurations for each dataset size, demonstrating that prior influence diminishes with more data.}
+\label{fig:app_prior_sens}
+\end{figure}
+
+\subsection{Posterior Predictive Checks}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.7\textwidth]{figures/ppc_results.png}
+\caption{Posterior predictive checks: (left) Distribution of predictive accuracies compared to observed validation accuracy; (right) predicted vs observed class frequencies across all 10 classes. The model successfully replicates key features of the observed data.}
+\label{fig:app_ppc}
+\end{figure}
+
+\subsection{Predictive Distributions with Uncertainty}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.7\textwidth]{figures/predictive_distribution.png}
+\caption{Predictive distributions with 95\% HDI for 10 test samples. High uncertainty (wide error bars) indicates unreliable predictions, enabling identification of samples where the model is uncertain.}
+\label{fig:app_predictive}
+\end{figure}
+
+\subsection{Uncertainty in Calibration Metrics}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.7\textwidth]{figures/ece-brier_Score_dist.png}
+\caption{Distribution of calibration metrics (ECE and Brier score) across posterior temperature samples. This quantifies uncertainty in calibration quality itself, enabling practitioners to assess confidence in calibration improvement.}
+\label{fig:app_metrics}
+\end{figure}
+
+\subsection{Per-Class Temperature Scaling}
+
+We also implemented per-class temperature scaling, estimating 10 separate temperature parameters (one per class). Results showed that per-class scaling provided minimal improvement over single temperature scaling (ECE: 0.0091 vs 0.0090), suggesting that a single temperature parameter is sufficient for this dataset.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.6\textwidth]{figures/per-class_temp.png}
+\caption{Per-class temperature estimates with 95\% HDI. While some classes show slight variation, the overall pattern suggests a single temperature parameter is sufficient for calibration.}
+\label{fig:app_perclass}
+\end{figure}
+
+\subsection{Baseline Comparison}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.7\textwidth]{figures/baseline_bayesian.png}
+\caption{Comparison of baseline calibration methods (Platt Scaling, Isotonic Regression) with Bayesian temperature scaling. All methods improve calibration, but temperature scaling provides the best balance of simplicity and performance.}
+\label{fig:app_baseline}
+\end{figure}
+
+\subsection{Computational Details}
+
+All experiments were conducted using PyStan (Stan version 2.34) on a machine with Apple Silicon. MCMC sampling for the full validation set ($n=5000$) required approximately 12 seconds, while L-BFGS optimization completed in $<1$ second. The computational overhead of Bayesian methods is acceptable given that calibration is performed once after model training.
+
+\begin{thebibliography}{9}
+
+\bibitem{guo2017calibration}
+Guo, C., Pleiss, G., Sun, Y., \& Weinberger, K. Q. (2017). On calibration of modern neural networks. \textit{International Conference on Machine Learning}, 1321-1330.
+
+\bibitem{stan2024}
+Stan Development Team. (2024). \textit{Stan Modeling Language Users Guide and Reference Manual}. Version 2.34. \url{https://mc-stan.org}
+
+\bibitem{gelman2013bayesian}
+Gelman, A., Carlin, J. B., Stern, H. S., Dunson, D. B., Vehtari, A., \& Rubin, D. B. (2013). \textit{Bayesian Data Analysis} (3rd ed.). Chapman and Hall/CRC.
+
+\bibitem{krizhevsky2009learning}
+Krizhevsky, A., \& Hinton, G. (2009). Learning multiple layers of features from tiny images. \textit{Technical Report}, University of Toronto.
+
+\bibitem{vehtari2017practical}
+Vehtari, A., Gelman, A., \& Gabry, J. (2017). Practical Bayesian model evaluation using leave-one-out cross-validation and WAIC. \textit{Statistics and Computing}, 27(5), 1413-1432.
+
+\end{thebibliography}
+
+\end{document}

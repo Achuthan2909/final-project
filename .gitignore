@@ -55,3 +55,9 @@ Thumbs.db
 # Project specific
 *.pdf
 !Project-Proposal.pdf
+
+# Models
+models/
+*.pth
+*.pt
+*.pkl
