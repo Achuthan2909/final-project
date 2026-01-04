@@ -174,10 +174,10 @@ The report includes:
 If you use this work, please cite:
 
 ```bibtex
-@misc{bayesian_temperature_scaling_2024,
+@misc{bayesian_temperature_scaling_2025,
   title={Bayesian Temperature Scaling for Neural Network Calibration},
   author={Achuthan},
-  year={2024},
+  year={2025},
   note={MA 578: Bayesian Statistics Final Project}
 }
 ```
