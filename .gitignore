@@ -55,6 +55,7 @@ Thumbs.db
 # Project specific
 *.pdf
 !Project-Proposal.pdf
+!latex/FinalReport.pdf
 
 # Models
 models/
