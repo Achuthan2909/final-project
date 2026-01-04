@@ -61,3 +61,8 @@ models/
 *.pth
 *.pt
 *.pkl
+
+# Data files (too large for git)
+notebooks/data/cifar-10-batches-py/
+notebooks/data/cifar-10-python.tar.gz
+notebooks/data/results/*.npy
